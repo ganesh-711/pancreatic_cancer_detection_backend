@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: pancreatic-cancer-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1
+    envVars:
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: FRONTEND_URL
+        value: https://your-vercel-app.vercel.app
+      - key: PYTHON_VERSION
+        value: 3.11.0
