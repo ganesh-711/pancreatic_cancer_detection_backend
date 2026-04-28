@@ -1,6 +1,7 @@
 import torch.nn as nn
 from torchvision import models
 
+
 class CNNModel(nn.Module):
     def __init__(self, num_classes=2):
         super(CNNModel, self).__init__()
