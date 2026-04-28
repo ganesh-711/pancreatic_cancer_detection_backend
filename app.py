@@ -27,7 +27,13 @@ from src.gradcam import generate_heatmap
 app = Flask(__name__)
 CORS(app, origins=[os.environ.get('FRONTEND_URL', '*')])
 
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
+# FIX: Use PostgreSQL on Render (falls back to SQLite for local dev)
+DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///users.db')
+# Render PostgreSQL URLs start with postgres://, SQLAlchemy needs postgresql://
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'pancreas-cancer-detection-secret-key')
 
@@ -50,15 +56,17 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(STATIC_FOLDER, exist_ok=True)
 
 # =======================
-# MODEL LOADING
+# MODEL LOADING (only once here)
 # =======================
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 model = CNNModel(num_classes=2).to(device)
 model.load_state_dict(
-    torch.load(os.path.join(ROOT_DIR, "saved_models/pancreas_model.pth"),
-               map_location=device)
+    torch.load(
+        os.path.join(ROOT_DIR, "saved_models/pancreas_model.pth"),
+        map_location=device
+    )
 )
 model.eval()
 
@@ -82,7 +90,7 @@ def register():
 
     hashed_password = generate_password_hash(data["password"])
     new_user = User(name=data["name"], email=data["email"], password_hash=hashed_password)
-    
+
     try:
         db.session.add(new_user)
         db.session.commit()
@@ -90,6 +98,7 @@ def register():
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": "Registration failed"}), 500
+
 
 @app.route("/api/auth/login", methods=["POST"])
 def login():
@@ -101,7 +110,6 @@ def login():
     if not user or not check_password_hash(user.password_hash, data["password"]):
         return jsonify({"error": "Invalid email or password"}), 401
 
-    # You can return string 'user.id' or convert it, JWT expects string or serializable
     access_token = create_access_token(identity=str(user.id))
     return jsonify({
         "message": "Login successful",
@@ -116,6 +124,7 @@ def home():
 
 
 @app.route("/predict", methods=["POST"])
+@jwt_required()
 def predict():
     if "image" not in request.files:
         return jsonify({"error": "No image uploaded"}), 400
@@ -125,36 +134,46 @@ def predict():
     img_path = os.path.join(UPLOAD_FOLDER, filename)
     file.save(img_path)
 
-    # Image preprocessing
-    img = Image.open(img_path).convert("RGB")
-    x = transform(img).unsqueeze(0).to(device)
+    try:
+        # Image preprocessing
+        img = Image.open(img_path).convert("RGB")
+        x = transform(img).unsqueeze(0).to(device)
 
-    with torch.no_grad():
-        out = model(x)
-        probabilities = torch.nn.functional.softmax(out, dim=1)
-        cancer_prob = probabilities[0][0].item()
-        normal_prob = probabilities[0][1].item()
-        
-        # Class 0 was learned as Cancer, Class 1 was learned as Normal
-        if cancer_prob > 0.50:
-            prediction = "Cancer"
-            confidence_val = cancer_prob
-        else:
-            prediction = "Normal"
-            confidence_val = normal_prob
+        with torch.no_grad():
+            out = model(x)
+            probabilities = torch.nn.functional.softmax(out, dim=1)
+            cancer_prob = probabilities[0][0].item()
+            normal_prob = probabilities[0][1].item()
 
-    # Generate GradCAM heatmap
-    heatmap_path = generate_heatmap(img_path)
+            # Class 0 = Cancer, Class 1 = Normal
+            if cancer_prob > 0.50:
+                prediction = "Cancer"
+                confidence_val = cancer_prob
+            else:
+                prediction = "Normal"
+                confidence_val = normal_prob
 
-    # Copy heatmap to backend/static/ folder
-    final_heatmap_path = os.path.join(STATIC_FOLDER, "heatmap.jpg")
-    os.replace(heatmap_path, final_heatmap_path)
+        # FIX: Pass model and device into generate_heatmap (no double loading)
+        heatmap_path = generate_heatmap(img_path, model, device)
 
-    return jsonify({
-        "prediction": prediction,
-        "confidence": round(confidence_val * 100, 2),
-        "heatmap_url": "/static/heatmap.jpg"
-    })
+        # Move heatmap to static folder
+        final_heatmap_path = os.path.join(STATIC_FOLDER, "heatmap.jpg")
+        os.replace(heatmap_path, final_heatmap_path)
+
+        # FIX: Return full URL so frontend (Vercel) can access it
+        base_url = os.environ.get('RENDER_EXTERNAL_URL', '')
+        heatmap_url = f"{base_url}/static/heatmap.jpg"
+
+        return jsonify({
+            "prediction": prediction,
+            "confidence": round(confidence_val * 100, 2),
+            "heatmap_url": heatmap_url
+        })
+
+    finally:
+        # FIX: Clean up uploaded file after prediction to save disk space
+        if os.path.exists(img_path):
+            os.remove(img_path)
 
 
 @app.route("/static/<path:filename>")
