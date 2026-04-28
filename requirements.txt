@@ -9,3 +9,4 @@ Pillow==10.3.0
 gunicorn==22.0.0
 opencv-python-headless==4.9.0.80
 grad-cam==1.5.4
+psycopg2-binary==2.9.9
