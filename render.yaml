@@ -8,6 +8,16 @@ services:
       - key: JWT_SECRET_KEY
         generateValue: true
       - key: FRONTEND_URL
-        value: https://your-vercel-app.vercel.app
+        value: https://your-vercel-app.vercel.app   # UPDATE this to your actual Vercel URL
       - key: PYTHON_VERSION
         value: 3.11.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pancreatic-cancer-db
+          property: connectionString
+
+databases:
+  - name: pancreatic-cancer-db
+    databaseName: pancreatic_cancer
+    user: pancreatic_user
+    plan: free
